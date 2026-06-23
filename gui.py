@@ -40,6 +40,7 @@ class ExcelCleanerApp:
         self.opt_names = tk.BooleanVar(value=True)
         self.opt_links = tk.BooleanVar(value=True)
         self.opt_unhide = tk.BooleanVar(value=True)
+        self.opt_keep_print = tk.BooleanVar(value=True)
         self.opt_overwrite = tk.BooleanVar(value=False)
 
         self._build_ui()
@@ -86,6 +87,11 @@ class ExcelCleanerApp:
         ttk.Checkbutton(
             opt_frame, text="숨겨진 시트 다시 표시 — hidden/veryHidden 복구",
             variable=self.opt_unhide,
+        ).pack(anchor="w", padx=10, pady=2)
+        ttk.Checkbutton(
+            opt_frame,
+            text="인쇄 영역(Print Area)은 유지 — 이름 삭제 시 인쇄 영역/제목 보존",
+            variable=self.opt_keep_print,
         ).pack(anchor="w", padx=10, pady=2)
 
         # --- 저장 방식 ---
@@ -166,6 +172,7 @@ class ExcelCleanerApp:
                 delete_names=self.opt_names.get(),
                 remove_external_links=self.opt_links.get(),
                 unhide_sheets=self.opt_unhide.get(),
+                keep_print_areas=self.opt_keep_print.get(),
                 overwrite=self.opt_overwrite.get(),
                 backup=True,
             )

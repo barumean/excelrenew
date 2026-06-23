@@ -39,6 +39,11 @@ WORKBOOK_XML = "xl/workbook.xml"
 WORKBOOK_RELS = "xl/_rels/workbook.xml.rels"
 CONTENT_TYPES = "[Content_Types].xml"
 EXTERNAL_LINKS_PREFIX = "xl/externalLinks/"
+CALC_CHAIN = "xl/calcChain.xml"
+
+# 엑셀이 내부적으로 "정의된 이름"으로 저장하는 인쇄 영역/제목.
+# 이 이름들은 삭제 대상에서 제외할 수 있다(인쇄 영역 유지).
+PRINT_BUILTIN_NAMES = ("_xlnm.Print_Area", "_xlnm.Print_Titles")
 
 
 @dataclass
@@ -68,19 +73,49 @@ class CleanResult:
 # ---------------------------------------------------------------------------
 # workbook.xml 수정 헬퍼
 # ---------------------------------------------------------------------------
-def _strip_defined_names(xml: str) -> tuple[str, int]:
-    """<definedNames> 블록 전체를 제거하고 삭제한 이름 개수를 반환."""
+def _strip_defined_names(xml: str, keep_print_areas: bool = True) -> tuple[str, int]:
+    """
+    <definedNames> 안의 개별 <definedName> 항목을 제거한다.
+
+    keep_print_areas=True 이면 인쇄 영역/제목(_xlnm.Print_Area,
+    _xlnm.Print_Titles)은 남겨 두고 나머지 이름만 삭제한다.
+    삭제한 이름 개수를 함께 반환한다.
+    """
     count = 0
 
-    def _count_and_drop(match: re.Match) -> str:
+    def _process_block(block_match: re.Match) -> str:
         nonlocal count
-        count += len(re.findall(r"<definedName\b", match.group(0)))
-        return ""
+        block = block_match.group(0)
+
+        kept_entries: list[str] = []
+
+        def _each_name(entry_match: re.Match) -> str:
+            nonlocal count
+            entry = entry_match.group(0)
+            name_attr = re.search(r'\bname="([^"]*)"', entry)
+            name = name_attr.group(1) if name_attr else ""
+            if keep_print_areas and name in PRINT_BUILTIN_NAMES:
+                kept_entries.append(entry)  # 인쇄 영역은 보존
+            else:
+                count += 1  # 삭제
+            return ""
+
+        # 블록 내부의 개별 <definedName> 항목을 순회
+        re.sub(
+            r"<definedName\b[^>]*?(?:/>|>.*?</definedName>)",
+            _each_name,
+            block,
+            flags=re.DOTALL,
+        )
+
+        if kept_entries:
+            return "<definedNames>" + "".join(kept_entries) + "</definedNames>"
+        return ""  # 남길 이름이 없으면 블록 자체 제거
 
     # <definedNames> ... </definedNames>
     xml = re.sub(
         r"<definedNames\b.*?</definedNames>",
-        _count_and_drop,
+        _process_block,
         xml,
         flags=re.DOTALL,
     )
@@ -124,6 +159,16 @@ def _strip_external_link_content_types(ct_xml: str) -> str:
     return re.sub(r"<Override\b[^>]*externalLink[^>]*/>", "", ct_xml)
 
 
+def _strip_calc_chain_rels(rels_xml: str) -> str:
+    """workbook.xml.rels 에서 calcChain 관계 항목을 제거."""
+    return re.sub(r"<Relationship\b[^>]*calcChain[^>]*/>", "", rels_xml)
+
+
+def _strip_calc_chain_content_types(ct_xml: str) -> str:
+    """[Content_Types].xml 에서 calcChain Override 항목 제거."""
+    return re.sub(r"<Override\b[^>]*calcChain[^>]*/>", "", ct_xml)
+
+
 # ---------------------------------------------------------------------------
 # 메인 처리 함수
 # ---------------------------------------------------------------------------
@@ -134,6 +179,8 @@ def clean_workbook(
     delete_names: bool = True,
     remove_external_links: bool = True,
     unhide_sheets: bool = True,
+    keep_print_areas: bool = True,
+    drop_calc_chain: bool = True,
     overwrite: bool = False,
     backup: bool = True,
 ) -> CleanResult:
@@ -147,6 +194,12 @@ def clean_workbook(
                - overwrite=False: 같은 폴더에 "<이름>_정리됨.<확장자>"
                - overwrite=True : 원본 경로 (backup=True 면 .bak 백업 생성)
     delete_names, remove_external_links, unhide_sheets : 수행할 작업 선택
+    keep_print_areas : 인쇄 영역/제목(_xlnm.Print_Area/_xlnm.Print_Titles)은
+                       삭제하지 않고 보존(기본값 True)
+    drop_calc_chain : 계산 순서 캐시(xl/calcChain.xml)를 제거. 구조가 바뀌면
+                      엑셀이 "제거된 레코드(계산 속성)" 경고를 띄우는데, 이
+                      파일을 미리 지워 두면 경고가 사라지고 엑셀이 자동
+                      재생성한다(기본값 True).
     overwrite : 원본을 덮어쓸지 여부
     backup : overwrite=True 일 때 원본 백업(.bak) 생성 여부
     """
@@ -187,11 +240,15 @@ def clean_workbook(
                     if remove_external_links and name.startswith(EXTERNAL_LINKS_PREFIX):
                         continue
 
+                    # 1-2) 계산 순서 캐시는 제거(엑셀이 재생성 → 계산속성 경고 방지)
+                    if drop_calc_chain and name == CALC_CHAIN:
+                        continue
+
                     # 2) workbook.xml: 이름/외부참조 제거, 시트 숨김 해제
                     if name == WORKBOOK_XML:
                         xml = data.decode("utf-8")
                         if delete_names:
-                            xml, n = _strip_defined_names(xml)
+                            xml, n = _strip_defined_names(xml, keep_print_areas)
                             result.names_removed = n
                         if remove_external_links:
                             xml = _strip_external_references(xml)
@@ -200,18 +257,24 @@ def clean_workbook(
                             result.sheets_unhidden = n
                         data = xml.encode("utf-8")
 
-                    # 3) workbook.xml.rels: 외부 링크 관계 제거
-                    #    (연결된 통합문서 1개당 관계 1개이므로 정확한 링크 수)
-                    elif name == WORKBOOK_RELS and remove_external_links:
+                    # 3) workbook.xml.rels: 외부 링크 + calcChain 관계 제거
+                    #    (외부 링크는 연결 통합문서 1개당 관계 1개 = 정확한 링크 수)
+                    elif name == WORKBOOK_RELS:
                         rels = data.decode("utf-8")
-                        rels, n = _strip_external_link_rels(rels)
-                        result.external_links_removed = n
+                        if remove_external_links:
+                            rels, n = _strip_external_link_rels(rels)
+                            result.external_links_removed = n
+                        if drop_calc_chain:
+                            rels = _strip_calc_chain_rels(rels)
                         data = rels.encode("utf-8")
 
-                    # 4) [Content_Types].xml: 외부 링크 Override 제거
-                    elif name == CONTENT_TYPES and remove_external_links:
+                    # 4) [Content_Types].xml: 외부 링크 + calcChain Override 제거
+                    elif name == CONTENT_TYPES:
                         ct = data.decode("utf-8")
-                        ct = _strip_external_link_content_types(ct)
+                        if remove_external_links:
+                            ct = _strip_external_link_content_types(ct)
+                        if drop_calc_chain:
+                            ct = _strip_calc_chain_content_types(ct)
                         data = ct.encode("utf-8")
 
                     # 원본 압축 방식/메타데이터를 유지하며 기록
@@ -272,6 +335,16 @@ def _main(argv) -> int:
     parser.add_argument("--no-names", action="store_true", help="정의된 이름 삭제 안 함")
     parser.add_argument("--no-links", action="store_true", help="외부 링크 제거 안 함")
     parser.add_argument("--no-unhide", action="store_true", help="숨겨진 시트 표시 안 함")
+    parser.add_argument(
+        "--delete-print-areas",
+        action="store_true",
+        help="인쇄 영역(Print Area)도 함께 삭제 (기본은 보존)",
+    )
+    parser.add_argument(
+        "--keep-calc-chain",
+        action="store_true",
+        help="계산 순서 캐시(calcChain.xml)를 남김 (기본은 제거)",
+    )
     args = parser.parse_args(argv)
 
     results = clean_many(
@@ -279,6 +352,8 @@ def _main(argv) -> int:
         delete_names=not args.no_names,
         remove_external_links=not args.no_links,
         unhide_sheets=not args.no_unhide,
+        keep_print_areas=not args.delete_print_areas,
+        drop_calc_chain=not args.keep_calc_chain,
         overwrite=args.overwrite,
     )
     failed = 0
