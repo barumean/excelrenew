@@ -113,13 +113,21 @@ python excel_cleaner.py --delete-print-areas --keep-calc-chain "파일.xlsx"
 ## Windows 실행 파일(.exe) 만들기
 
 파이썬이 없는 PC에서도 더블클릭으로 쓰도록 단일 `.exe` 로 빌드할 수 있습니다.
+(빌드는 **Windows + 파이썬 환경**에서 진행하세요.)
 
 ```bat
-pip install pyinstaller
+pip install pyinstaller          REM 필수
+pip install tkinterdnd2          REM 선택(드래그 앤 드롭 포함하려면)
 build_exe.bat
 ```
 
-`dist\엑셀정리기.exe` 가 생성됩니다. (Windows 에서 실행해야 합니다.)
+`dist\ExcelRenew.exe` 가 생성됩니다. 만든 뒤 파일명을 한글(예: `엑셀정리기.exe`)로
+바꿔도 동작에는 영향이 없습니다.
+
+- `build_exe.bat` 은 실행 시 PyInstaller 설치 여부를 먼저 확인하고, `tkinterdnd2`
+  설치가 감지되면 드래그 앤 드롭 기능까지 포함해 빌드합니다.
+- 빌드는 실행하는 OS용 실행 파일을 만듭니다. Windows `.exe` 를 얻으려면 반드시
+  Windows 에서 빌드하세요.
 
 ## 테스트
 
