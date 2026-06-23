@@ -20,9 +20,21 @@ from tkinter import filedialog, messagebox, ttk
 
 from excel_cleaner import SUPPORTED_EXTS, clean_workbook
 
+# 드래그 앤 드롭(tkinterdnd2)이 설치돼 있으면 사용하고, 없으면 버튼 방식으로
+# 자동 폴백한다. (tkinterdnd2 는 OS 파일 끌어다 놓기를 지원하는 외부 라이브러리)
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+
+    DND_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    DND_AVAILABLE = False
+
 APP_TITLE = "엑셀 정리기 (Excel Renew)"
+
+# 지원하는 파일 형식(확장자). excel_cleaner 의 정의를 그대로 사용.
+SUPPORTED_DISPLAY = " ".join(sorted(SUPPORTED_EXTS))  # 예: ".xlsm .xltm .xltx .xlsx"
 FILETYPES = [
-    ("엑셀 파일", "*.xlsx *.xlsm *.xltx *.xltm"),
+    ("엑셀 파일", " ".join(f"*{e}" for e in sorted(SUPPORTED_EXTS))),
     ("모든 파일", "*.*"),
 ]
 
@@ -57,17 +69,41 @@ class ExcelCleanerApp:
         )
         header.pack(anchor="w", **pad)
 
+        # 지원 파일 형식 명시
+        ttk.Label(
+            self.root,
+            text=f"지원 형식: {SUPPORTED_DISPLAY}  (구형 .xls 는 미지원 — 엑셀에서 .xlsx 로 저장 후 사용)",
+            foreground="#555",
+        ).pack(anchor="w", padx=10)
+
         # --- 파일 목록 영역 ---
         list_frame = ttk.LabelFrame(self.root, text="정리할 파일")
         list_frame.pack(fill="both", expand=True, padx=10, pady=4)
 
-        self.listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=8)
+        # 드래그 앤 드롭 안내(사용 가능 여부에 따라 문구 변경)
+        if DND_AVAILABLE:
+            hint = "↓ 여기로 엑셀 파일을 끌어다 놓거나, '파일 추가…' 버튼을 누르세요"
+        else:
+            hint = "'파일 추가…' 버튼으로 파일을 선택하세요 (드래그 앤 드롭은 tkinterdnd2 설치 시 활성화)"
+        ttk.Label(list_frame, text=hint, foreground="#777").pack(
+            anchor="w", padx=10, pady=(6, 0)
+        )
+
+        inner = ttk.Frame(list_frame)
+        inner.pack(fill="both", expand=True)
+
+        self.listbox = tk.Listbox(inner, selectmode=tk.EXTENDED, height=8)
         self.listbox.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
-        sb = ttk.Scrollbar(list_frame, orient="vertical", command=self.listbox.yview)
+        sb = ttk.Scrollbar(inner, orient="vertical", command=self.listbox.yview)
         sb.pack(side="left", fill="y", pady=8)
         self.listbox.config(yscrollcommand=sb.set)
 
-        btn_col = ttk.Frame(list_frame)
+        # 리스트박스를 드롭 대상으로 등록
+        if DND_AVAILABLE:
+            self.listbox.drop_target_register(DND_FILES)
+            self.listbox.dnd_bind("<<Drop>>", self._on_drop)
+
+        btn_col = ttk.Frame(inner)
         btn_col.pack(side="left", fill="y", padx=8, pady=8)
         ttk.Button(btn_col, text="파일 추가…", command=self.add_files).pack(fill="x", pady=2)
         ttk.Button(btn_col, text="선택 제거", command=self.remove_selected).pack(fill="x", pady=2)
@@ -124,10 +160,35 @@ class ExcelCleanerApp:
     # -------------------------------------------------------------- actions
     def add_files(self):
         paths = filedialog.askopenfilenames(title="엑셀 파일 선택", filetypes=FILETYPES)
+        self._add_paths(paths)
+
+    def _on_drop(self, event):
+        """드래그 앤 드롭으로 들어온 파일 경로 처리."""
+        # tk.splitlist 가 중괄호({})로 묶인 공백 포함 경로까지 올바로 분리해 준다.
+        paths = self.root.tk.splitlist(event.data)
+        self._add_paths(paths)
+
+    def _add_paths(self, paths):
+        """경로 목록을 지원 형식만 걸러 중복 없이 추가한다."""
+        added = 0
+        skipped = []
         for p in paths:
+            p = os.path.normpath(p)
+            ext = os.path.splitext(p)[1].lower()
+            if ext not in SUPPORTED_EXTS:
+                skipped.append(os.path.basename(p))
+                continue
             if p not in self.files:
                 self.files.append(p)
                 self.listbox.insert(tk.END, p)
+                added += 1
+        if skipped:
+            messagebox.showwarning(
+                APP_TITLE,
+                "지원하지 않는 형식이라 제외했습니다:\n"
+                + "\n".join(skipped)
+                + f"\n\n지원 형식: {SUPPORTED_DISPLAY}",
+            )
 
     def remove_selected(self):
         for idx in reversed(self.listbox.curselection()):
@@ -197,7 +258,8 @@ class ExcelCleanerApp:
 
 
 def main():
-    root = tk.Tk()
+    # 드래그 앤 드롭 지원 시 전용 Tk 루트를 사용한다.
+    root = TkinterDnD.Tk() if DND_AVAILABLE else tk.Tk()
     # ttk 테마(가능하면 보기 좋은 테마 사용)
     try:
         style = ttk.Style()
