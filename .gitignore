@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+*_정리됨.xlsx
+*.bak
+*.bak[0-9]*
